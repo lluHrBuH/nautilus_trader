@@ -130,7 +130,7 @@ config_node = TradingNodeConfig(
     #     use_trader_id=False,
     #     use_instance_id=False,
     #     stream_per_topic=False,
-    #     types_filter=[QuoteTick],
+    #     types_filter=[QuoteTick),
     #     autotrim_mins=30,
     #     heartbeat_interval_secs=1,
     # ),
