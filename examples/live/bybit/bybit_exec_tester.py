@@ -87,7 +87,7 @@ config_node = TradingNodeConfig(
     trader_id=TraderId("TESTER-001"),
     logging=LoggingConfig(
         log_level="INFO",
-        log_level_file="INFO",
+        log_level_file="DEBUG",
         # log_file_max_size=1_000_000_000,
         use_pyo3=True,
     ),
@@ -152,7 +152,6 @@ config_node = TradingNodeConfig(
             api_secret=None,  # 'BYBIT_API_SECRET' env var
             base_url_http=None,  # Override with custom endpoint
             base_url_ws_private=None,  # Override with custom endpoint
-            use_ws_trade_api=True,
             instrument_provider=InstrumentProviderConfig(load_all=True),
             product_types=product_types,
             use_spot_position_reports=use_spot_position_reports,
