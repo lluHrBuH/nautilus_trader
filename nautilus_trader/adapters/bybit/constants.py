@@ -30,3 +30,5 @@ BYBIT_ALL_PRODUCTS: Final[tuple[BybitProductType, ...]] = (
     BybitProductType.INVERSE,
     BybitProductType.OPTION,
 )
+
+BYBIT_MULTIPLIERS: Final[list[int]] = [1000000, 100000, 10000, 1000, 100, 10]

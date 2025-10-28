@@ -15,6 +15,7 @@
 
 from typing import Any
 
+from nautilus_trader.adapters.bybit.constants import BYBIT_MULTIPLIERS
 from nautilus_trader.adapters.bybit.constants import BYBIT_VENUE
 from nautilus_trader.common.providers import InstrumentProvider
 from nautilus_trader.config import InstrumentProviderConfig
