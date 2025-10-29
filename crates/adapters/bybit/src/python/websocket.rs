@@ -156,6 +156,12 @@ impl BybitWebSocketClient {
         self.subscription_count()
     }
 
+    #[pyo3(name = "masked_api_key")]
+    #[must_use]
+    pub fn py_masked_api_key(&self) -> Option<String> {
+        self.credential().map(|c| c.masked_api_key())
+    }
+
     #[pyo3(name = "add_instrument")]
     fn py_add_instrument(&self, py: Python<'_>, instrument: Py<PyAny>) -> PyResult<()> {
         self.add_instrument(pyobject_to_instrument_any(py, instrument)?);

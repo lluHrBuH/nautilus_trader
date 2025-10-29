@@ -102,6 +102,12 @@ impl BybitHttpClient {
         self.credential().map(|c| c.api_key()).map(|u| u.as_str())
     }
 
+    #[pyo3(name = "masked_api_key")]
+    #[must_use]
+    pub fn py_masked_api_key(&self) -> Option<String> {
+        self.credential().map(|c| c.masked_api_key())
+    }
+
     #[pyo3(name = "add_instrument")]
     fn py_add_instrument(&self, py: Python, instrument: Py<PyAny>) -> PyResult<()> {
         let inst_any = pyobject_to_instrument_any(py, instrument)?;

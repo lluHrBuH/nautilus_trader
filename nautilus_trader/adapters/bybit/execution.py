@@ -149,7 +149,7 @@ class BybitExecutionClient(LiveExecutionClient):
         self._use_spot_position_reports = config.use_spot_position_reports
         self._ignore_uncached_instrument_executions = config.ignore_uncached_instrument_executions
 
-        self._log.info(f"Account type: {self._account_type}", LogColor.BLUE)
+        self._log.info(f"Account type: {self._account_type.name}", LogColor.BLUE)
         self._log.info(f"Product types: {[str(p) for p in self._product_types]}", LogColor.BLUE)
         self._log.info(f"{config.testnet=}", LogColor.BLUE)
         self._log.info(f"{config.use_gtd=}", LogColor.BLUE)
@@ -168,7 +168,8 @@ class BybitExecutionClient(LiveExecutionClient):
 
         # HTTP API
         self._http_client = client
-        self._log.info(f"REST API key {self._http_client.api_key}", LogColor.BLUE)
+        masked_key = self._http_client.masked_api_key()
+        self._log.info(f"REST API key {masked_key}", LogColor.BLUE)
 
         # Configure HTTP client settings
         self._http_client.set_use_spot_position_reports(self._use_spot_position_reports)
@@ -569,6 +570,11 @@ class BybitExecutionClient(LiveExecutionClient):
                 report = PositionStatusReport.from_pyo3(pyo3_report)
                 self._log.debug(f"Received {report}", LogColor.MAGENTA)
                 reports.append(report)
+        except ValueError as e:
+            if "request canceled" in str(e).lower():
+                self._log.debug("PositionStatusReports request cancelled during shutdown")
+            else:
+                self._log.exception("Failed to generate PositionStatusReports", e)
         except Exception as e:
             self._log.exception("Failed to generate PositionStatusReports", e)
 

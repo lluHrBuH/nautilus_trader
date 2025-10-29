@@ -8,9 +8,11 @@ Released on TBD (UTC).
 - Added `CalmarRatio` portfolio statistic
 - Added `MaxDrawdown` portfolio statistic
 - Upgraded continuous reconciliation for execution engine using position reports to detect missed fills
+- Added `masked_api_key()` method to Bybit HTTP and WebSocket clients for secure API key logging
 
 ### Breaking Changes
 - Dropped support for Python 3.11
+- Removed `use_ws_trade_api` config option from Bybit execution client (using WebSocket trade API only)
 
 ### Security
 TBD

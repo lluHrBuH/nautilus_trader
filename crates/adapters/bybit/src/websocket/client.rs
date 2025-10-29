@@ -635,6 +635,12 @@ impl BybitWebSocketClient {
         self.subscriptions.len()
     }
 
+    /// Returns the credential associated with this client, if any.
+    #[must_use]
+    pub fn credential(&self) -> Option<&Credential> {
+        self.credential.as_ref()
+    }
+
     /// Adds an instrument to the cache for parsing WebSocket messages.
     pub fn add_instrument(&self, instrument: InstrumentAny) {
         let instrument_id = instrument.id();
