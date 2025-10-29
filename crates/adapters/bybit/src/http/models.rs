@@ -616,7 +616,7 @@ pub struct BybitOrder {
 ///
 /// # References
 /// - <https://bybit-exchange.github.io/docs/v5/order/realtime>
-pub type BybitOpenOrdersResponse = BybitListResponse<BybitOrder>;
+pub type BybitOpenOrdersResponse = BybitCursorListResponse<BybitOrder>;
 /// Response alias for order history queries with pagination.
 ///
 /// # References
@@ -698,7 +698,7 @@ pub struct BybitExecution {
 ///
 /// # References
 /// - <https://bybit-exchange.github.io/docs/v5/order/execution-list>
-pub type BybitTradeHistoryResponse = BybitListResponse<BybitExecution>;
+pub type BybitTradeHistoryResponse = BybitCursorListResponse<BybitExecution>;
 
 /// Represents a position returned by the Bybit API.
 ///

@@ -13,12 +13,11 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Tests for bar request pagination logic to ensure chronological ordering.
+//! Comprehensive pagination tests for Bybit adapter.
 //!
-//! These tests verify that the pagination implementation in `request_bars`:
-//! 1. Maintains chronological order when fetching multiple pages (oldest to newest)
-//! 2. Correctly applies limit to return the most recent N bars
-//! 3. Uses `splice(0..0, new_bars)` to insert older pages at the front
+//! This test suite covers pagination for:
+//! 1. Market Data (bars/klines) - chronological ordering, multi-page fetching
+//! 2. Execution Endpoints - orders, trade history, positions with cursor pagination
 
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
@@ -32,7 +31,12 @@ use chrono::{DateTime, Duration, Utc};
 use nautilus_bybit::{
     common::{enums::BybitProductType, parse::parse_linear_instrument},
     http::{
-        client::BybitHttpClient, models::BybitFeeRate, query::BybitInstrumentsInfoParamsBuilder,
+        client::BybitHttpClient,
+        models::{
+            BybitFeeRate, BybitOpenOrdersResponse, BybitOrderHistoryResponse,
+            BybitPositionListResponse, BybitTradeHistoryResponse,
+        },
+        query::BybitInstrumentsInfoParamsBuilder,
     },
 };
 use nautilus_model::{
@@ -351,5 +355,295 @@ async fn test_bars_limit_returns_most_recent() {
         time_diff < 100,
         "Last bar should be close to end time, but was {} minutes away",
         time_diff
+    );
+}
+
+/// Test that BybitOpenOrdersResponse properly deserializes with cursor
+#[rstest]
+fn test_open_orders_response_with_cursor() {
+    let json = r#"{
+        "retCode": 0,
+        "retMsg": "OK",
+        "result": {
+            "list": [
+                {
+                    "orderId": "order-1",
+                    "orderLinkId": "client-1",
+                    "blockTradeId": null,
+                    "symbol": "BTCUSDT",
+                    "price": "50000.00",
+                    "qty": "0.100",
+                    "side": "Buy",
+                    "isLeverage": "0",
+                    "positionIdx": 0,
+                    "orderStatus": "New",
+                    "cancelType": "",
+                    "rejectReason": "",
+                    "avgPrice": null,
+                    "leavesQty": "0.100",
+                    "leavesValue": "5000.00",
+                    "cumExecQty": "0",
+                    "cumExecValue": "0",
+                    "cumExecFee": "0",
+                    "timeInForce": "GTC",
+                    "orderType": "Limit",
+                    "stopOrderType": "",
+                    "orderIv": null,
+                    "triggerPrice": "0",
+                    "takeProfit": "0",
+                    "stopLoss": "0",
+                    "tpTriggerBy": "LastPrice",
+                    "slTriggerBy": "LastPrice",
+                    "triggerDirection": 0,
+                    "triggerBy": "LastPrice",
+                    "lastPriceOnCreated": "50000.00",
+                    "reduceOnly": false,
+                    "closeOnTrigger": false,
+                    "smpType": "None",
+                    "smpGroup": 0,
+                    "smpOrderId": "0",
+                    "tpslMode": "Full",
+                    "tpLimitPrice": "0",
+                    "slLimitPrice": "0",
+                    "placeType": "order",
+                    "createdTime": "1672282722429",
+                    "updatedTime": "1672282722429"
+                }
+            ],
+            "nextPageCursor": "cursor-page-2"
+        },
+        "time": 1672282722429
+    }"#;
+
+    let response: BybitOpenOrdersResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(response.ret_code, 0);
+    assert_eq!(response.result.list.len(), 1);
+    assert_eq!(
+        response.result.next_page_cursor,
+        Some("cursor-page-2".to_string())
+    );
+}
+
+/// Test that empty cursor properly deserializes
+#[rstest]
+fn test_open_orders_response_empty_cursor() {
+    let json = r#"{
+        "retCode": 0,
+        "retMsg": "OK",
+        "result": {
+            "list": [],
+            "nextPageCursor": ""
+        },
+        "time": 1672282722429
+    }"#;
+
+    let response: BybitOpenOrdersResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(response.ret_code, 0);
+    assert!(response.result.list.is_empty());
+    // Empty string should deserialize to Some("")
+    assert_eq!(response.result.next_page_cursor, Some("".to_string()));
+}
+
+/// Test that order history response supports cursor pagination
+#[rstest]
+fn test_order_history_response_with_cursor() {
+    let json = r#"{
+        "retCode": 0,
+        "retMsg": "OK",
+        "result": {
+            "list": [],
+            "nextPageCursor": "next-page"
+        },
+        "time": 1672282722429
+    }"#;
+
+    let response: BybitOrderHistoryResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        response.result.next_page_cursor,
+        Some("next-page".to_string())
+    );
+}
+
+/// Test that trade history response supports cursor pagination
+#[rstest]
+fn test_trade_history_response_with_cursor() {
+    let json = r#"{
+        "retCode": 0,
+        "retMsg": "OK",
+        "result": {
+            "list": [],
+            "nextPageCursor": "execution-cursor"
+        },
+        "time": 1672282722429
+    }"#;
+
+    let response: BybitTradeHistoryResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        response.result.next_page_cursor,
+        Some("execution-cursor".to_string())
+    );
+}
+
+/// Test that position list response supports cursor pagination
+#[rstest]
+fn test_position_list_response_with_cursor() {
+    let json = r#"{
+        "retCode": 0,
+        "retMsg": "OK",
+        "result": {
+            "list": [],
+            "nextPageCursor": "position-cursor"
+        },
+        "time": 1672282722429
+    }"#;
+
+    let response: BybitPositionListResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        response.result.next_page_cursor,
+        Some("position-cursor".to_string())
+    );
+}
+
+/// Test the pagination loop pattern that's used in the implementation
+#[rstest]
+fn test_pagination_loop_pattern() {
+    // Simulate pagination responses
+    let responses = vec![
+        r#"{"retCode": 0, "retMsg": "OK", "result": {"list": ["item1", "item2"], "nextPageCursor": "page2"}, "time": 123}"#,
+        r#"{"retCode": 0, "retMsg": "OK", "result": {"list": ["item3", "item4"], "nextPageCursor": "page3"}, "time": 123}"#,
+        r#"{"retCode": 0, "retMsg": "OK", "result": {"list": ["item5"], "nextPageCursor": ""}, "time": 123}"#,
+    ];
+
+    // Simulate the pagination loop
+    let mut all_items: Vec<String> = Vec::new();
+    let mut page_count = 0;
+
+    for response_json in responses.iter() {
+        #[derive(serde::Deserialize)]
+        struct MockResponse {
+            result: MockResult,
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct MockResult {
+            list: Vec<String>,
+            next_page_cursor: Option<String>,
+        }
+
+        let response: MockResponse = serde_json::from_str(response_json).unwrap();
+        all_items.extend(response.result.list);
+        page_count += 1;
+
+        let cursor = response.result.next_page_cursor;
+        if cursor.is_none() || cursor.as_ref().map_or(true, |c| c.is_empty()) {
+            break;
+        }
+    }
+
+    assert_eq!(page_count, 3, "Should have processed 3 pages");
+    assert_eq!(all_items.len(), 5, "Should have collected 5 total items");
+    assert_eq!(all_items, vec!["item1", "item2", "item3", "item4", "item5"]);
+}
+
+/// Test that pagination stops on empty cursor
+#[rstest]
+fn test_pagination_stops_on_empty_cursor() {
+    let cursor: Option<String> = Some("".to_string());
+
+    // This is the termination condition used in the pagination loops
+    let should_stop = cursor.is_none() || cursor.as_ref().map_or(true, |c| c.is_empty());
+
+    assert!(should_stop, "Empty cursor should terminate pagination");
+}
+
+/// Test that pagination continues with valid cursor
+#[rstest]
+fn test_pagination_continues_with_valid_cursor() {
+    let cursor: Option<String> = Some("next-page".to_string());
+
+    // This is the termination condition used in the pagination loops
+    let should_stop = cursor.is_none() || cursor.as_ref().map_or(true, |c| c.is_empty());
+
+    assert!(!should_stop, "Valid cursor should continue pagination");
+}
+
+/// Test that limit calculation respects remaining items correctly
+#[rstest]
+fn test_limit_calculation() {
+    // Test case 1: limit=10, total=0, should request min(10, 50) = 10
+    let limit = Some(10u32);
+    let total = 0;
+    let remaining = (limit.unwrap() as usize).saturating_sub(total);
+    let page_limit = std::cmp::min(remaining, 50);
+    assert_eq!(page_limit, 10, "Should request exactly 10 items");
+
+    // Test case 2: limit=10, total=5, should request min(5, 50) = 5
+    let total = 5;
+    let remaining = (limit.unwrap() as usize).saturating_sub(total);
+    let page_limit = std::cmp::min(remaining, 50);
+    assert_eq!(page_limit, 5, "Should request exactly 5 remaining items");
+
+    // Test case 3: limit=10, total=10, should request 0
+    let total = 10;
+    let remaining = (limit.unwrap() as usize).saturating_sub(total);
+    assert_eq!(remaining, 0, "Should have no remaining items to request");
+
+    // Test case 4: limit=10, total=15, should request 0 (saturating)
+    let total = 15;
+    let remaining = (limit.unwrap() as usize).saturating_sub(total);
+    assert_eq!(remaining, 0, "Should saturate at 0 when over limit");
+
+    // Test case 5: limit=100, total=0, should request min(100, 50) = 50 (API max)
+    let limit = Some(100u32);
+    let total = 0;
+    let remaining = (limit.unwrap() as usize).saturating_sub(total);
+    let page_limit = std::cmp::min(remaining, 50);
+    assert_eq!(page_limit, 50, "Should respect API maximum of 50");
+
+    // Test case 6: limit=100, total=75, should request min(25, 50) = 25
+    let total = 75;
+    let remaining = (limit.unwrap() as usize).saturating_sub(total);
+    let page_limit = std::cmp::min(remaining, 50);
+    assert_eq!(page_limit, 25, "Should request exactly 25 remaining items");
+
+    // Test case 7: no limit (None), should use usize::MAX
+    let limit: Option<u32> = None;
+    let total = 1000;
+    let remaining = if let Some(l) = limit {
+        (l as usize).saturating_sub(total)
+    } else {
+        usize::MAX
+    };
+    assert_eq!(
+        remaining,
+        usize::MAX,
+        "Should have unlimited remaining when no limit"
+    );
+}
+
+/// Test execution limit calculation with API max of 100
+#[rstest]
+fn test_execution_limit_calculation() {
+    // Test case 1: limit=50, total=0, should request min(50, 100) = 50
+    let limit = Some(50u32);
+    let total = 0;
+    let remaining = (limit.unwrap() as usize).saturating_sub(total);
+    let page_limit = std::cmp::min(remaining, 100);
+    assert_eq!(page_limit, 50, "Should request exactly 50 executions");
+
+    // Test case 2: limit=150, total=0, should request min(150, 100) = 100 (API max)
+    let limit = Some(150u32);
+    let total = 0;
+    let remaining = (limit.unwrap() as usize).saturating_sub(total);
+    let page_limit = std::cmp::min(remaining, 100);
+    assert_eq!(page_limit, 100, "Should respect API maximum of 100");
+
+    // Test case 3: limit=150, total=100, should request min(50, 100) = 50
+    let total = 100;
+    let remaining = (limit.unwrap() as usize).saturating_sub(total);
+    let page_limit = std::cmp::min(remaining, 100);
+    assert_eq!(
+        page_limit, 50,
+        "Should request exactly 50 remaining executions"
     );
 }

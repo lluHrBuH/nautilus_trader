@@ -1966,90 +1966,193 @@ impl BybitHttpInnerClient {
             None
         };
 
-        // Determine settle_coin based on product type
-        // For INVERSE products, don't use settle_coin
-        // For LINEAR/SPOT/OPTION, use USDT as default when no symbol is specified
-        let settle_coin = match product_type {
-            BybitProductType::Inverse => None,
-            _ if symbol_param.is_none() => Some("USDT".to_string()),
-            _ => None,
-        };
-
-        let params = if open_only {
-            // When open_only=true, only query realtime endpoint
-            let mut p = BybitOpenOrdersParamsBuilder::default();
-            p.category(product_type);
-            if let Some(symbol) = symbol_param.clone() {
-                p.symbol(symbol);
-            }
-            if let Some(coin) = settle_coin.clone() {
-                p.settle_coin(coin);
-            }
-            let params = p.build().map_err(|e| anyhow::anyhow!(e))?;
-            let path = Self::build_path("/v5/order/realtime", &params)?;
-            let response: BybitOpenOrdersResponse =
-                self.send_request(Method::GET, &path, None, true).await?;
-            response.result.list
-        } else {
-            // When open_only=false, query BOTH endpoints to ensure we don't miss any orders
-            // The realtime endpoint has the most up-to-date open orders
-            // The history endpoint has recently closed orders
-            let mut all_orders = Vec::new();
-
-            // First get open orders from realtime endpoint
-            let mut open_params = BybitOpenOrdersParamsBuilder::default();
-            open_params.category(product_type);
-            if let Some(symbol) = symbol_param.clone() {
-                open_params.symbol(symbol);
-            }
-            if let Some(coin) = settle_coin.clone() {
-                open_params.settle_coin(coin);
-            }
-            let open_params = open_params.build().map_err(|e| anyhow::anyhow!(e))?;
-            let open_path = Self::build_path("/v5/order/realtime", &open_params)?;
-            let open_response: BybitOpenOrdersResponse = self
-                .send_request(Method::GET, &open_path, None, true)
-                .await?;
-            let open_orders = open_response.result.list;
-
-            // Collect order IDs from open orders for deduplication
-            let seen_order_ids: std::collections::HashSet<Ustr> =
-                open_orders.iter().map(|o| o.order_id).collect();
-
-            all_orders.extend(open_orders);
-
-            // Then get order history (which may lag for very recent orders)
-            let mut history_params = BybitOrderHistoryParamsBuilder::default();
-            history_params.category(product_type);
-            if let Some(symbol) = symbol_param {
-                history_params.symbol(symbol);
-            }
-            if let Some(coin) = settle_coin {
-                history_params.settle_coin(coin);
-            }
-            if let Some(limit) = limit {
-                history_params.limit(limit);
-            }
-            let history_params = history_params.build().map_err(|e| anyhow::anyhow!(e))?;
-            let history_path = Self::build_path("/v5/order/history", &history_params)?;
-            let history_response: BybitOrderHistoryResponse = self
-                .send_request(Method::GET, &history_path, None, true)
-                .await?;
-
-            // De-duplicate by order_id (open orders might appear in both)
-            for order in history_response.result.list {
-                if !seen_order_ids.contains(&order.order_id) {
-                    all_orders.push(order);
+        // For LINEAR without symbol, query all settle coins to avoid filtering
+        // For INVERSE, never use settle_coin parameter
+        let settle_coins_to_query: Vec<Option<String>> =
+            if product_type == BybitProductType::Linear && symbol_param.is_none() {
+                vec![Some("USDT".to_string()), Some("USDC".to_string())]
+            } else {
+                match product_type {
+                    BybitProductType::Inverse => vec![None],
+                    _ => vec![None],
                 }
-            }
+            };
 
-            all_orders
-        };
+        let mut all_collected_orders = Vec::new();
+        let mut total_collected_across_coins = 0;
+
+        for settle_coin in settle_coins_to_query {
+            let remaining_limit = if let Some(limit) = limit {
+                let remaining = (limit as usize).saturating_sub(total_collected_across_coins);
+                if remaining == 0 {
+                    break;
+                }
+                Some(remaining as u32)
+            } else {
+                None
+            };
+
+            let orders_for_coin = if open_only {
+                let mut all_orders = Vec::new();
+                let mut cursor: Option<String> = None;
+                let mut total_orders = 0;
+
+                loop {
+                    let remaining = if let Some(limit) = remaining_limit {
+                        (limit as usize).saturating_sub(total_orders)
+                    } else {
+                        usize::MAX
+                    };
+
+                    if remaining == 0 {
+                        break;
+                    }
+
+                    // Max 50 per Bybit API
+                    let page_limit = std::cmp::min(remaining, 50);
+
+                    let mut p = BybitOpenOrdersParamsBuilder::default();
+                    p.category(product_type);
+                    if let Some(symbol) = symbol_param.clone() {
+                        p.symbol(symbol);
+                    }
+                    if let Some(coin) = settle_coin.clone() {
+                        p.settle_coin(coin);
+                    }
+                    p.limit(page_limit as u32);
+                    if let Some(c) = cursor {
+                        p.cursor(c);
+                    }
+                    let params = p.build().map_err(|e| anyhow::anyhow!(e))?;
+                    let path = Self::build_path("/v5/order/realtime", &params)?;
+                    let response: BybitOpenOrdersResponse =
+                        self.send_request(Method::GET, &path, None, true).await?;
+
+                    total_orders += response.result.list.len();
+                    all_orders.extend(response.result.list);
+
+                    cursor = response.result.next_page_cursor;
+                    if cursor.is_none() || cursor.as_ref().is_none_or(|c| c.is_empty()) {
+                        break;
+                    }
+                }
+
+                all_orders
+            } else {
+                // Query both realtime and history endpoints
+                // Realtime has current open orders, history may lag for recent orders
+                let mut all_orders = Vec::new();
+                let mut open_orders = Vec::new();
+                let mut cursor: Option<String> = None;
+                let mut total_open_orders = 0;
+
+                loop {
+                    let remaining = if let Some(limit) = remaining_limit {
+                        (limit as usize).saturating_sub(total_open_orders)
+                    } else {
+                        usize::MAX
+                    };
+
+                    if remaining == 0 {
+                        break;
+                    }
+
+                    // Max 50 per Bybit API
+                    let page_limit = std::cmp::min(remaining, 50);
+
+                    let mut open_params = BybitOpenOrdersParamsBuilder::default();
+                    open_params.category(product_type);
+                    if let Some(symbol) = symbol_param.clone() {
+                        open_params.symbol(symbol);
+                    }
+                    if let Some(coin) = settle_coin.clone() {
+                        open_params.settle_coin(coin);
+                    }
+                    open_params.limit(page_limit as u32);
+                    if let Some(c) = cursor {
+                        open_params.cursor(c);
+                    }
+                    let open_params = open_params.build().map_err(|e| anyhow::anyhow!(e))?;
+                    let open_path = Self::build_path("/v5/order/realtime", &open_params)?;
+                    let open_response: BybitOpenOrdersResponse = self
+                        .send_request(Method::GET, &open_path, None, true)
+                        .await?;
+
+                    total_open_orders += open_response.result.list.len();
+                    open_orders.extend(open_response.result.list);
+
+                    cursor = open_response.result.next_page_cursor;
+                    if cursor.is_none() || cursor.as_ref().is_none_or(|c| c.is_empty()) {
+                        break;
+                    }
+                }
+
+                let seen_order_ids: std::collections::HashSet<Ustr> =
+                    open_orders.iter().map(|o| o.order_id).collect();
+
+                all_orders.extend(open_orders);
+
+                let mut cursor: Option<String> = None;
+                let mut total_history_orders = 0;
+
+                loop {
+                    let total_orders = total_open_orders + total_history_orders;
+                    let remaining = if let Some(limit) = remaining_limit {
+                        (limit as usize).saturating_sub(total_orders)
+                    } else {
+                        usize::MAX
+                    };
+
+                    if remaining == 0 {
+                        break;
+                    }
+
+                    // Max 50 per Bybit API
+                    let page_limit = std::cmp::min(remaining, 50);
+
+                    let mut history_params = BybitOrderHistoryParamsBuilder::default();
+                    history_params.category(product_type);
+                    if let Some(symbol) = symbol_param.clone() {
+                        history_params.symbol(symbol);
+                    }
+                    if let Some(coin) = settle_coin.clone() {
+                        history_params.settle_coin(coin);
+                    }
+                    history_params.limit(page_limit as u32);
+                    if let Some(c) = cursor {
+                        history_params.cursor(c);
+                    }
+                    let history_params = history_params.build().map_err(|e| anyhow::anyhow!(e))?;
+                    let history_path = Self::build_path("/v5/order/history", &history_params)?;
+                    let history_response: BybitOrderHistoryResponse = self
+                        .send_request(Method::GET, &history_path, None, true)
+                        .await?;
+
+                    // Open orders might appear in both realtime and history
+                    for order in history_response.result.list {
+                        if !seen_order_ids.contains(&order.order_id) {
+                            all_orders.push(order);
+                            total_history_orders += 1;
+                        }
+                    }
+
+                    cursor = history_response.result.next_page_cursor;
+                    if cursor.is_none() || cursor.as_ref().is_none_or(|c| c.is_empty()) {
+                        break;
+                    }
+                }
+
+                all_orders
+            };
+
+            total_collected_across_coins += orders_for_coin.len();
+            all_collected_orders.extend(orders_for_coin);
+        }
 
         let ts_init = self.generate_ts_init();
 
         let mut reports = Vec::new();
-        for order in params {
+        for order in all_collected_orders {
             if let Some(ref instrument_id) = instrument_id {
                 let instrument = self.instrument_from_cache(&instrument_id.symbol)?;
                 if let Ok(report) =
@@ -2105,24 +2208,56 @@ impl BybitHttpInnerClient {
         } else {
             None
         };
-        let params = BybitTradeHistoryParams {
-            category: product_type,
-            symbol,
-            base_coin: None,
-            order_id: None,
-            order_link_id: None,
-            start_time: start,
-            end_time: end,
-            exec_type: None,
-            limit,
-            cursor: None,
-        };
 
-        let response = self.http_get_trade_history(&params).await?;
+        // Fetch all executions with pagination
+        let mut all_executions = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut total_executions = 0;
+
+        loop {
+            // Calculate how many more executions we can request
+            let remaining = if let Some(limit) = limit {
+                (limit as usize).saturating_sub(total_executions)
+            } else {
+                usize::MAX
+            };
+
+            // If we've reached the limit, stop
+            if remaining == 0 {
+                break;
+            }
+
+            // Size the page request to respect caller's limit (max 100 per Bybit API)
+            let page_limit = std::cmp::min(remaining, 100);
+
+            let params = BybitTradeHistoryParams {
+                category: product_type,
+                symbol: symbol.clone(),
+                base_coin: None,
+                order_id: None,
+                order_link_id: None,
+                start_time: start,
+                end_time: end,
+                exec_type: None,
+                limit: Some(page_limit as u32),
+                cursor: cursor.clone(),
+            };
+
+            let response = self.http_get_trade_history(&params).await?;
+            let list_len = response.result.list.len();
+            all_executions.extend(response.result.list);
+            total_executions += list_len;
+
+            cursor = response.result.next_page_cursor;
+            if cursor.is_none() || cursor.as_ref().is_none_or(|c| c.is_empty()) {
+                break;
+            }
+        }
+
         let ts_init = self.generate_ts_init();
         let mut reports = Vec::new();
 
-        for execution in response.result.list {
+        for execution in all_executions {
             // Get instrument for this execution
             // Bybit returns raw symbol (e.g. "ETHUSDT"), need to add product suffix for cache lookup
             let symbol_with_product =
@@ -2186,15 +2321,63 @@ impl BybitHttpInnerClient {
         // For LINEAR category, the API requires either symbol OR settleCoin
         // When querying all positions (no symbol), we must iterate through settle coins
         if product_type == BybitProductType::Linear && symbol.is_none() {
-            // Query positions for each known settle coin
+            // Query positions for each known settle coin with pagination
             for settle_coin in ["USDT", "USDC"] {
+                let mut cursor: Option<String> = None;
+
+                loop {
+                    let params = BybitPositionListParams {
+                        category: product_type,
+                        symbol: None,
+                        base_coin: None,
+                        settle_coin: Some(settle_coin.to_string()),
+                        limit: Some(200), // Max 200 per request
+                        cursor: cursor.clone(),
+                    };
+
+                    let response = self.http_get_positions(&params).await?;
+
+                    for position in response.result.list {
+                        if position.symbol.is_empty() {
+                            continue;
+                        }
+
+                        let symbol_with_product = Symbol::new(format!(
+                            "{}{}",
+                            position.symbol.as_str(),
+                            product_type.suffix()
+                        ));
+
+                        if let Ok(instrument) = self.instrument_from_cache(&symbol_with_product)
+                            && let Ok(report) = parse_position_status_report(
+                                &position,
+                                account_id,
+                                &instrument,
+                                ts_init,
+                            )
+                        {
+                            reports.push(report);
+                        }
+                    }
+
+                    cursor = response.result.next_page_cursor;
+                    if cursor.is_none() || cursor.as_ref().is_none_or(|c| c.is_empty()) {
+                        break;
+                    }
+                }
+            }
+        } else {
+            // For other product types or when a specific symbol is requested with pagination
+            let mut cursor: Option<String> = None;
+
+            loop {
                 let params = BybitPositionListParams {
                     category: product_type,
-                    symbol: None,
+                    symbol: symbol.clone(),
                     base_coin: None,
-                    settle_coin: Some(settle_coin.to_string()),
-                    limit: None,
-                    cursor: None,
+                    settle_coin: None,
+                    limit: Some(200), // Max 200 per request
+                    cursor: cursor.clone(),
                 };
 
                 let response = self.http_get_positions(&params).await?;
@@ -2221,36 +2404,10 @@ impl BybitHttpInnerClient {
                         reports.push(report);
                     }
                 }
-            }
-        } else {
-            // For other product types or when a specific symbol is requested
-            let params = BybitPositionListParams {
-                category: product_type,
-                symbol,
-                base_coin: None,
-                settle_coin: None,
-                limit: None,
-                cursor: None,
-            };
 
-            let response = self.http_get_positions(&params).await?;
-
-            for position in response.result.list {
-                if position.symbol.is_empty() {
-                    continue;
-                }
-
-                let symbol_with_product = Symbol::new(format!(
-                    "{}{}",
-                    position.symbol.as_str(),
-                    product_type.suffix()
-                ));
-
-                if let Ok(instrument) = self.instrument_from_cache(&symbol_with_product)
-                    && let Ok(report) =
-                        parse_position_status_report(&position, account_id, &instrument, ts_init)
-                {
-                    reports.push(report);
+                cursor = response.result.next_page_cursor;
+                if cursor.is_none() || cursor.as_ref().is_none_or(|c| c.is_empty()) {
+                    break;
                 }
             }
         }

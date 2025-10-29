@@ -529,6 +529,12 @@ pub struct BybitOpenOrdersParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[builder(setter(strip_option))]
     pub order_link_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[builder(setter(strip_option))]
+    pub limit: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[builder(setter(strip_option))]
+    pub cursor: Option<String>,
 }
 
 /// Query parameters for `GET /v5/order/history`.
